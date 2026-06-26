@@ -1,0 +1,26 @@
+# Build output
+bin/
+obj/
+
+# Playwright browser binaries (installed separately via playwright.ps1 install)
+.playwright/
+
+# AI-generated action cache — delete any .json here to force Claude re-generation
+# The folder itself is tracked (via .gitkeep) so the path always exists at runtime
+GeneratedActions/*.json
+
+# Failure screenshots (captured on test error)
+Screenshots/*.png
+
+# IDE / OS
+.vs/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
+
+# NuGet
+*.nupkg
+
+# Env files for API Keys, passwords, etc. — these are sensitive and should not be checked in
+env/
