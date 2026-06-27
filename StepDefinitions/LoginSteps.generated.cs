@@ -8,37 +8,37 @@ public class LoginSteps
         _loginPage = loginPage;
     }
 
-    [Given(@"I am on the login page")]
+    [Given("I am on the login page")]
     public async Task GivenIAmOnTheLoginPage()
     {
         await _loginPage.IAmOnTheLoginPage();
     }
 
-    [When(@"I enter the username ""(.*)"" and password ""(.*)""")]
+    [When("I enter the username {string} and password {string}")]
     public async Task WhenIEnterTheUsernameAndPassword(string username, string password)
     {
         await _loginPage.IEnterTheUsernameAndPassword(username, password);
     }
 
-    [When(@"I click the Login button")]
+    [When("I click the Login button")]
     public async Task WhenIClickTheLoginButton()
     {
         await _loginPage.IClickTheLoginButton();
     }
 
-    [Then(@"I should see an error flash message")]
+    [Then("I should see an error flash message")]
     public async Task ThenIShouldSeeAnErrorFlashMessage()
     {
         await _loginPage.IShouldSeeAnErrorFlashMessage();
     }
 
-    [Then(@"I should be redirected to the secure area")]
+    [Then("I should be redirected to the secure area")]
     public async Task ThenIShouldBeRedirectedToTheSecureArea()
     {
         await _loginPage.IShouldBeRedirectedToTheSecureArea();
     }
 
-    [Then(@"I should see a success flash message")]
+    [Then("I should see a success flash message")]
     public async Task ThenIShouldSeeASuccessFlashMessage()
     {
         await _loginPage.IShouldSeeASuccessFlashMessage();

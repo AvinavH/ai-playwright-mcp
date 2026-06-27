@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/allure-framework/allure-csharp/main/schemas/allureConfig.schema.json",
+  "allure": {
+    "directory": "../../../allure-results",
+    "title": "AI Playwright C# Framework"
+  },
+  "links": [
+    {
+      "type": "issue",
+      "urlTemplate": "https://github.com/your-org/your-repo/issues/{}"
+    },
+    {
+      "type": "tms",
+      "urlTemplate": "https://your-tms.example.com/test/{}"
+    }
+  ]
+}

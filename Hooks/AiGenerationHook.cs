@@ -1,3 +1,5 @@
+using Playwright.AiFramework.Reporting;
+
 namespace Playwright.AiFramework.Hooks;
 
 /// <summary>
@@ -6,7 +8,7 @@ namespace Playwright.AiFramework.Hooks;
 ///   1. Read the Gherkin scenario text from the .feature file on disk
 ///   2. Check the disk cache (GeneratedActions/) — skip API call if already generated
 ///   3. If no cache → call Claude API with the scenario + system prompt
-///   4. Parse the returned JSON into List&lt;PlaywrightAction&gt;
+///   4. Parse the returned JSON into List;PlaywrightAction;
 ///   5. Persist to cache for future runs
 ///   6. Execute the actions via PlaywrightRunner (real browser interactions)
 ///
@@ -21,8 +23,13 @@ namespace Playwright.AiFramework.Hooks;
 /// Artifact guarantee:
 ///   Page Object and Step Definitions are ALWAYS written to disk — even when all
 ///   retries are exhausted — so the developer can review and fix them manually.
+/// 
+/// Allure integration:
+///   • Initial action plan attached as JSON to every test case
+///   • Each retry attempt is a named Allure step with the healed plan attached
+///   • Generated Page Object and Step Definitions attached after code generation
+///   • On failure, the error message is attached as a text note
 /// </summary>
- 
 [Binding]
 public class AiGenerationHook
 {
@@ -56,8 +63,6 @@ public class AiGenerationHook
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Main hook
-    // ─────────────────────────────────────────────────────────────────────────
 
     [BeforeScenario("ai_generated", Order = 10)]
     public async Task GenerateAndRunAsync()
@@ -69,9 +74,12 @@ public class AiGenerationHook
 
         var scenarioText = await _featureReader.GetScenarioTextAsync(title);
 
-        // ── 1. Get initial action plan (cache or Claude) ──────────────────────
+        // ── 1. Get initial action plan ────────────────────────────────────────
         var actions = await _cache.TryGetAsync(title)
                       ?? await GenerateInitialActionsAsync(scenarioText, title);
+
+        // Attach the action plan to the Allure report immediately
+        AllureReporter.AttachActionPlan(actions, "AI Action Plan (initial)");
 
         // ── 2. Execute with self-healing retry ────────────────────────────────
         Exception? testFailure = null;
@@ -86,25 +94,29 @@ public class AiGenerationHook
             testFailure = ex;
             Console.WriteLine($"\n  ❌ Test failed after {MaxRetries} retry attempt(s)");
             Console.WriteLine($"  Last error: {FirstLine(ex.Message)}");
+            AllureReporter.AttachText(ex.Message, "Final Failure Details");
         }
 
-        // ── 3. Always save code artifacts ─────────────────────────────────────
-        // Generated regardless of test outcome so the developer can review/fix.
-        Console.WriteLine("\n  📦 Saving code artifacts...");
+        // ── 3. Always save and attach code artefacts ──────────────────────────
+        Console.WriteLine("\n  📦 Saving code artefacts...");
         try
         {
             var codeGen = new CodeGenerator(_claude);
             await codeGen.GenerateArtifactsAsync(scenarioText, featureTitle);
+
+            // Attach generated files to the Allure report so reviewers can
+            // inspect the AI-generated code directly from the report UI
+            AttachGeneratedCode(featureTitle);
         }
         catch (Exception codeEx)
         {
             Console.WriteLine($"  ⚠️  Code generation error (non-fatal): {codeEx.Message}");
         }
 
-        // ── 4. Re-throw test failure AFTER artifacts are written ──────────────
+        // ── 4. Re-throw after artefacts are written ───────────────────────────
         if (testFailure is not null)
         {
-            Console.WriteLine("  💾 Page Object and Step Definitions saved for manual review\n");
+            Console.WriteLine("  💾 Artefacts saved for manual review\n");
             throw testFailure;
         }
     }
@@ -132,12 +144,6 @@ public class AiGenerationHook
     // Retry loop
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Attempts to execute the action plan up to (MaxRetries + 1) times.
-    /// After each failure, the failing plan and the Playwright error are sent to
-    /// Claude, which returns a corrected plan. The healed plan overwrites the cache
-    /// so future cold starts use the best known working version.
-    /// </summary>
     private async Task ExecuteWithRetryAsync(
         List<PlaywrightAction> initialActions,
         string scenarioText,
@@ -150,22 +156,30 @@ public class AiGenerationHook
         {
             if (attempt > 1)
             {
-                Console.WriteLine($"\n  🔄 Retry {attempt - 1}/{MaxRetries} — self-healing...");
-                await ResetPageAsync();
-                actions = await HealActionsAsync(actions, scenarioText, lastError!);
-                // Overwrite cache so next cold start uses the healed plan
-                await _cache.SaveAsync(cacheKey, actions);
+                // Each retry is a named Allure step so the report clearly shows
+                // how many self-heal iterations were needed
+                await AllureReporter.StepAsync(
+                    $"🔄 Self-heal retry {attempt - 1}/{MaxRetries}",
+                    async () =>
+                    {
+                        await ResetPageAsync();
+                        actions = await HealActionsAsync(actions, scenarioText, lastError!);
+                        await _cache.SaveAsync(cacheKey, actions);
+
+                        // Attach the healed plan so each retry's attempt is traceable
+                        AllureReporter.AttachActionPlan(
+                            actions, $"Healed Action Plan (retry {attempt - 1})");
+                    });
             }
 
             Console.WriteLine(
-                $"\n  ▶  Executing {actions.Count} action(s) " +
-                $"(attempt {attempt} of {MaxRetries + 1}):\n");
+                $"\n  ▶  Executing {actions.Count} action(s) — attempt {attempt}/{MaxRetries + 1}:\n");
 
             try
             {
                 var runner = new PlaywrightRunner(_playwright.Page!);
                 await runner.ExecuteAsync(actions);
-                return; // ← success, exit loop
+                return;
             }
             catch (Exception ex)
             {
@@ -184,10 +198,6 @@ public class AiGenerationHook
     // Self-healing
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Sends the failed action plan + Playwright error to Claude and asks for a
-    /// corrected plan. The response is parsed exactly like the initial generation.
-    /// </summary>
     private async Task<List<PlaywrightAction>> HealActionsAsync(
         List<PlaywrightAction> failedActions,
         string scenarioText,
@@ -205,49 +215,77 @@ public class AiGenerationHook
         sb.AppendLine("FAILED ACTION PLAN (JSON):");
         sb.AppendLine(JsonConvert.SerializeObject(failedActions, Formatting.Indented));
         sb.AppendLine();
-        sb.AppendLine("SELF-HEAL GUIDANCE (match the fix to the error message):");
+        sb.AppendLine("SELF-HEAL GUIDANCE:");
         sb.AppendLine("  strict mode / resolved to N elements → add or correct the 'index' field");
-        sb.AppendLine("  element not found / waiting for locator → try a different locatorType or locatorName");
-        sb.AppendLine("  expected to contain text / element not found → the locator or expected text is wrong");
-        sb.AppendLine("  checkbox no accessible name → locatorName must be \"\" with index:0 or index:1");
-        sb.AppendLine("  timeout → the page may not have loaded; insert a wait_for_url or assert_visible first");
+        sb.AppendLine("  element not found / waiting for locator → try different locatorType or locatorName");
+        sb.AppendLine("  expected to contain text / not found  → locator or expected text is wrong");
+        sb.AppendLine("  checkbox no accessible name           → locatorName must be \"\" with index");
+        sb.AppendLine("  timeout                               → insert wait_for_url or assert_visible first");
         sb.AppendLine();
         sb.Append("Return ONLY the corrected JSON action array — same schema, no explanation.");
 
         Console.WriteLine("  🧠 Asking Claude to self-heal the action plan...");
-        var raw = await _claude.GenerateAsync(SystemPrompts.TestActionGenerator, sb.ToString());
-
+        var raw    = await _claude.GenerateAsync(SystemPrompts.TestActionGenerator, sb.ToString());
         var healed = ParseActions(raw, "healed");
+
         Console.WriteLine($"  ✅ Healed plan: {healed.Count} action(s)");
         PrintActionPlan(healed);
         return healed;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Page reset between retries
+    // Allure artefact attachment
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static void AttachGeneratedCode(string featureTitle)
+    {
+        var root          = FindProjectRoot();
+        var pageClassName = DerivePageClassName(featureTitle);
+        var stepClassName = pageClassName.Replace("Page", "Steps");
+
+        var pageFile = Path.Combine(root, "Pages",           $"{pageClassName}.generated.cs");
+        var stepFile = Path.Combine(root, "StepDefinitions", $"{stepClassName}.generated.cs");
+
+        AllureReporter.AttachGeneratedFile(pageFile, $"Generated: {pageClassName}.cs");
+        AllureReporter.AttachGeneratedFile(stepFile, $"Generated: {stepClassName}.cs");
+    }
+
+    private static string DerivePageClassName(string featureTitle)
+    {
+        var clean = System.Text.RegularExpressions.Regex.Replace(
+            featureTitle, @"\b(Feature|Tests?|Specs?)\b", "",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+
+        var pascal = string.Concat(
+            System.Text.RegularExpressions.Regex
+                .Replace(clean, @"[^a-zA-Z0-9\s]", "")
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Select(w => char.ToUpper(w[0]) + w[1..]));
+
+        return pascal.EndsWith("Page", StringComparison.OrdinalIgnoreCase)
+            ? pascal : pascal + "Page";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Page reset
     // ─────────────────────────────────────────────────────────────────────────
 
     private async Task ResetPageAsync()
     {
         try
         {
-            // Clear session state so the healed plan starts from a known clean position
             await _playwright.BrowserContext!.ClearCookiesAsync();
             await _playwright.Page!.GotoAsync("about:blank");
-            Console.WriteLine("  🔁 Page reset (cookies cleared, navigated to blank)");
+            Console.WriteLine("  🔁 Page reset (cookies cleared)");
         }
         catch
         {
-            // Page may be in a crashed state — allocate a fresh one
             try
             {
                 _playwright.Page = await _playwright.BrowserContext!.NewPageAsync();
                 Console.WriteLine("  🔁 Fresh page created for retry");
             }
-            catch
-            {
-                // Non-critical — the retry attempt will surface its own error
-            }
+            catch { /* non-critical */ }
         }
     }
 
@@ -273,6 +311,14 @@ public class AiGenerationHook
     private static string FirstLine(string message) =>
         message.Split('\n', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
 
+    private static string FindProjectRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !dir.GetFiles("*.csproj").Any())
+            dir = dir.Parent;
+        return dir?.FullName ?? AppContext.BaseDirectory;
+    }
+
     private static void PrintBanner(string title)
     {
         Console.WriteLine($"\n  {"─",60}");
@@ -295,9 +341,7 @@ public class AiGenerationHook
         for (var i = 0; i < actions.Count; i++)
         {
             var a      = actions[i];
-            var target = a.LocatorType is not null
-                ? $"  [{a.LocatorType}:{a.LocatorName}]"
-                : string.Empty;
+            var target = a.LocatorType is not null ? $"  [{a.LocatorType}:{a.LocatorName}]" : string.Empty;
             Console.WriteLine($"    {i + 1:D2}. {a.Action,-16}{target}");
         }
         Console.WriteLine();

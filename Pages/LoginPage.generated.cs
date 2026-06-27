@@ -4,10 +4,7 @@ namespace Playwright.AiFramework.Pages
     {
         private readonly IPage _page;
 
-        public LoginPage(IPage page)
-        {
-            _page = page;
-        }
+        public LoginPage(IPage page) { _page = page; }
 
         public async Task IAmOnTheLoginPage()
         {

@@ -1,8 +1,14 @@
+using Playwright.AiFramework.Reporting;
+
 namespace Playwright.AiFramework.Hooks;
 
 /// <summary>
 /// Manages the Playwright browser lifecycle for every scenario.
 /// Captures a full-page screenshot on test failure.
+///
+/// Allure integration:
+///   • Failure screenshots are attached directly to the Allure test case
+///     in addition to being saved to disk, so the report is self-contained.
 /// </summary>
 [Binding]
 public class BrowserHooks
@@ -17,8 +23,6 @@ public class BrowserHooks
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Setup
-    // ─────────────────────────────────────────────────────────────────────────
 
     [BeforeScenario(Order = 1)]
     public async Task LaunchBrowserAsync()
@@ -30,11 +34,7 @@ public class BrowserHooks
         _context.Playwright = await Microsoft.Playwright.Playwright.CreateAsync();
 
         _context.Browser = await _context.Playwright.Chromium.LaunchAsync(
-            new BrowserTypeLaunchOptions
-            {
-                Headless = headless,
-                SlowMo   = slowMo
-            });
+            new BrowserTypeLaunchOptions { Headless = headless, SlowMo = slowMo });
 
         _context.BrowserContext = await _context.Browser.NewContextAsync(
             new BrowserNewContextOptions
@@ -48,14 +48,10 @@ public class BrowserHooks
         Console.WriteLine($"  🌐 Browser ready  headless={headless}  slowMo={slowMo}ms  base={baseUrl}");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Teardown
-    // ─────────────────────────────────────────────────────────────────────────
-
     [AfterScenario(Order = 99)]
     public async Task CloseBrowserAsync()
     {
-        if (_scenario.TestError is not null)
+        if (_scenario.TestError is not null && _context.Page is not null)
             await CaptureFailureScreenshotAsync();
 
         if (_context.Page           is not null) await _context.Page.CloseAsync();
@@ -65,12 +61,13 @@ public class BrowserHooks
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Screenshot on failure
-    // ─────────────────────────────────────────────────────────────────────────
 
     private async Task CaptureFailureScreenshotAsync()
     {
-        if (_context.Page is null) return;
+        // 1. Attach to Allure report (embedded in the HTML report)
+        await AllureReporter.AttachScreenshotAsync(_context.Page!, "❌ Failure Screenshot");
+
+        // 2. Also save to disk for archiving / CI artefact upload
         try
         {
             var dir      = Path.Combine(AppContext.BaseDirectory, "Screenshots");
@@ -79,14 +76,14 @@ public class BrowserHooks
             var fileName = $"{Sanitise(_scenario.ScenarioInfo.Title)}_{DateTime.Now:yyyyMMdd_HHmmss}.png";
             var path     = Path.Combine(dir, fileName);
 
-            await _context.Page.ScreenshotAsync(
+            await _context.Page!.ScreenshotAsync(
                 new PageScreenshotOptions { Path = path, FullPage = true });
 
-            Console.WriteLine($"  📸 Failure screenshot saved  →  {path}");
+            Console.WriteLine($"  📸 Failure screenshot: {path}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"  ⚠️  Screenshot capture failed: {ex.Message}");
+            Console.WriteLine($"  ⚠️  Screenshot save failed: {ex.Message}");
         }
     }
 
