@@ -12,8 +12,8 @@ public class AnthropicClient
 {
     private readonly HttpClient _http;
 
-    private const string ApiUrl     = "https://api.anthropic.com/v1/messages";
-    private const string Model      = "claude-sonnet-4-6";
+    private const string ApiUrl = "https://api.anthropic.com/v1/messages";
+    private const string Model = "claude-sonnet-4-6";
     private const string ApiVersion = "2023-06-01";
 
     public AnthropicClient(string apiKey)
@@ -31,17 +31,17 @@ public class AnthropicClient
     {
         var requestBody = new
         {
-            model      = Model,
+            model = Model,
             max_tokens = 1024,
-            system     = SystemPrompts.TestActionGenerator,
-            messages   = new[] { new { role = "user", content = scenarioText } }
+            system = SystemPrompts.TestActionGenerator,
+            messages = new[] { new { role = "user", content = scenarioText } }
         };
 
-        var json    = JsonConvert.SerializeObject(requestBody);
+        var json = JsonConvert.SerializeObject(requestBody);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
 
         var response = await _http.PostAsync(ApiUrl, content);
-        var body     = await response.Content.ReadAsStringAsync();
+        var body = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException(
@@ -53,5 +53,32 @@ public class AnthropicClient
                        $"Unexpected Anthropic API response shape:\n{body}");
 
         return text;
+    }
+    /// <summary>
+    /// Send a Gherkin scenario to Claude and get back a raw JSON string
+    /// containing the list of Playwright actions.
+    /// takes any system prompt
+    /// </summary>
+    public async Task<string> GenerateAsync(string systemPrompt, string userMessage)
+    {
+        var requestBody = new
+        {
+            model = Model,
+            max_tokens = 1500,
+            system = systemPrompt,
+            messages = new[] { new { role = "user", content = userMessage } }
+        };
+
+        var json = JsonConvert.SerializeObject(requestBody);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await _http.PostAsync(ApiUrl, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(
+                $"Anthropic API returned {(int)response.StatusCode}: {body}");
+
+        return JObject.Parse(body)["content"]?[0]?["text"]?.ToString()
+               ?? throw new InvalidOperationException("Unexpected API response shape");
     }
 }

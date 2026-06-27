@@ -22,10 +22,17 @@ public class PlaywrightAction
     public string? LocatorName { get; set; }
 
     /// <summary>
-    /// 0-based index for GetByRole().Nth(n) when multiple elements share the same role.
-    /// Null means no Nth filter is applied.
+    /// 0-based index for .Nth(n).
+    /// REQUIRED for any element that can appear multiple times (Delete buttons, etc.).
     /// </summary>
     public int? Index { get; set; }
+
+    /// <summary>
+    /// Fix 4 — Strict mode: whether to use exact matching for role name or text content.
+    /// Null → PlaywrightRunner defaults to true (safe default).
+    /// Explicitly set false only when a partial/substring match is intentional.
+    /// </summary>
+    public bool? Exact { get; set; }
 
     /// <summary>Value to type (fill) or option to select (select).</summary>
     public string? Value { get; set; }
