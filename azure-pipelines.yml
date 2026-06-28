@@ -48,35 +48,47 @@ steps:
       arguments: '--configuration $(buildConfiguration) --no-restore'
 
   # ── 4. Install Playwright Chromium ───────────────────────────────────────────
-  # playwright.ps1 requires PowerShell 7 (pwsh).
-  # This step installs pwsh automatically if it is not already present,
-  # so no manual machine setup is needed.
-  # After the first pipeline run, pwsh is cached on the agent and the
-  # download is skipped on all subsequent runs.
+  # The agent runs as NT AUTHORITY\NETWORK SERVICE which cannot write to
+  # C:\Program Files — MSI installs silently fail without admin rights.
+  #
+  # Solution: download the portable ZIP of PowerShell 7 and extract it to
+  # C:\azagent\tools\pwsh7\ where the agent already has write access.
+  # No installation, no elevation, no admin rights needed.
+  # After the first run the folder is cached; subsequent runs skip the download.
   - task: PowerShell@2
     displayName: 'Install Playwright Chromium'
     inputs:
       targetType: 'inline'
       script: |
-        $pwshExe = "C:\Program Files\PowerShell\7\pwsh.exe"
+        $pwshDir = "C:\azagent\tools\pwsh7"
+        $pwshExe = "$pwshDir\pwsh.exe"
 
         if (-not (Test-Path $pwshExe)) {
-          Write-Host "PowerShell 7 not found — downloading installer..."
-          $msi = "$env:TEMP\pwsh7.msi"
+          Write-Host "Downloading PowerShell 7 portable ZIP (no admin rights required)..."
+          $zip = "$env:TEMP\pwsh7.zip"
           Invoke-WebRequest `
-            -Uri "https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.msi" `
-            -OutFile $msi `
+            -Uri "https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip" `
+            -OutFile $zip `
             -UseBasicParsing
-          Write-Host "Installing PowerShell 7 silently..."
-          Start-Process msiexec -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
-          Write-Host "PowerShell 7 installed successfully."
+
+          Write-Host "Extracting to $pwshDir..."
+          New-Item -ItemType Directory -Force -Path $pwshDir | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $pwshDir -Force
+          Write-Host "PowerShell 7 ready at: $pwshExe"
         } else {
-          Write-Host "PowerShell 7 already present at $pwshExe"
+          Write-Host "PowerShell 7 already cached at: $pwshExe"
+        }
+
+        # Verify the exe actually exists before invoking it
+        if (-not (Test-Path $pwshExe)) {
+          Write-Error "pwsh.exe not found at $pwshExe after extraction. Aborting."
+          exit 1
         }
 
         Write-Host "Installing Playwright Chromium..."
         & $pwshExe "bin\$(buildConfiguration)\net8.0\playwright.ps1" install chromium
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "Playwright Chromium installed successfully."
 
   # ── 5. Run tests ─────────────────────────────────────────────────────────────
   - task: DotNetCoreCLI@2
@@ -105,18 +117,17 @@ steps:
       mergeTestResults: true
       failTaskOnFailedTests: false
 
-  # ── 7. Install Allure CLI and generate report ─────────────────────────────────
-  # npx allure-commandline bypasses the PATH refresh issue — it finds the
-  # package from the npm cache directly after npm install -g completes.
+  # ── 7. Install Allure CLI ─────────────────────────────────────────────────────
   - script: npm install -g allure-commandline
     displayName: 'Install Allure CLI'
     condition: always()
 
+  # ── 8. Generate Allure HTML report ───────────────────────────────────────────
   - script: npx --yes allure-commandline generate allure-results -o allure-report --clean
     displayName: 'Generate Allure HTML report'
     condition: always()
 
-  # ── 8. Publish artefacts ──────────────────────────────────────────────────────
+  # ── 9. Publish artefacts ──────────────────────────────────────────────────────
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure results (raw)'
     condition: always()
