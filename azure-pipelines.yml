@@ -111,19 +111,22 @@ steps:
       mergeTestResults: true
       failTaskOnFailedTests: false
 
-  # ── 7. Install Allure CLI ─────────────────────────────────────────────────────
-  - script: npm install -g allure-commandline --quiet
-    displayName: 'Install Allure CLI'
+  # ── 7. Install Allure CLI and Generate Report ─────────────────────────────────────────────────────
+  - task: PowerShell@2
+    displayName: 'Install Allure CLI and Generate Report'
     condition: always()
+    inputs:
+      targetType: 'inline'
+      script: |
+        npm install -g allure-commandline
 
-  # ── 8. Generate Allure HTML report ───────────────────────────────────────────
-  # allure-results is written to the project root by allureConfig.json
-  # ("directory": "../../../allure-results" redirects from bin/Debug/net8.0/).
-  - script: allure generate allure-results -o allure-report --clean
-    displayName: 'Generate Allure HTML report'
-    condition: always()
+        # Refresh PATH so allure.cmd is visible in this same session
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") `
+                  + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
 
-  # ── 9. Publish Allure raw results ────────────────────────────────────────────
+        allure generate allure-results -o allure-report --clean
+
+  # ── 8. Publish Allure raw results ────────────────────────────────────────────
   # Raw results are needed to build trend/history charts across pipeline runs.
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure results (raw)'
@@ -133,7 +136,7 @@ steps:
       artifact: 'allure-results'
       publishLocation: 'pipeline'
 
-  # ── 10. Publish Allure HTML report ───────────────────────────────────────────
+  # ── 9. Publish Allure HTML report ───────────────────────────────────────────
   # Download this artefact from the pipeline run summary to view the full report.
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure HTML report'
