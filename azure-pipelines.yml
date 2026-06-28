@@ -1,0 +1,150 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# AI Playwright C# Framework — Azure DevOps CI Pipeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+trigger:
+  branches:
+    include:
+      - main
+      - enhacement
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  name: Default
+
+variables:
+  - group: ai-playwright-secrets
+  - name:  buildConfiguration
+    value: 'Debug'
+  - name:  projectFile
+    value: 'Playwright.AiFramework.csproj'
+
+steps:
+
+  # ── 1. .NET SDK ──────────────────────────────────────────────────────────────
+  - task: UseDotNet@2
+    displayName: 'Use .NET 8'
+    inputs:
+      packageType: 'sdk'
+      version: '8.0.x'
+
+  # ── 2. Restore ───────────────────────────────────────────────────────────────
+  - task: DotNetCoreCLI@2
+    displayName: 'dotnet restore'
+    inputs:
+      command: 'restore'
+      projects: '$(projectFile)'
+
+  # ── 3. Build ─────────────────────────────────────────────────────────────────
+  - task: DotNetCoreCLI@2
+    displayName: 'dotnet build'
+    inputs:
+      command: 'build'
+      projects: '$(projectFile)'
+      arguments: '--configuration $(buildConfiguration) --no-restore'
+
+  # ── 4. Install Playwright Chromium ───────────────────────────────────────────
+  # Uses the portable ZIP of PowerShell 7 — no MSI install, no admin rights.
+  # Cached to C:\azagent\tools\pwsh7 so subsequent runs skip the download.
+  - task: PowerShell@2
+    displayName: 'Install Playwright Chromium'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $pwshDir = "C:\azagent\tools\pwsh7"
+        $pwshExe = "$pwshDir\pwsh.exe"
+
+        if (-not (Test-Path $pwshExe)) {
+          Write-Host "Downloading PowerShell 7 portable ZIP..."
+          $zip = "$env:TEMP\pwsh7.zip"
+          Invoke-WebRequest `
+            -Uri "https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip" `
+            -OutFile $zip `
+            -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path $pwshDir | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $pwshDir -Force
+          Write-Host "PowerShell 7 ready at: $pwshExe"
+        } else {
+          Write-Host "PowerShell 7 already cached at: $pwshExe"
+        }
+
+        if (-not (Test-Path $pwshExe)) {
+          Write-Error "pwsh.exe not found at $pwshExe after extraction."
+          exit 1
+        }
+
+        Write-Host "Installing Playwright Chromium..."
+        & $pwshExe "bin\$(buildConfiguration)\net8.0\playwright.ps1" install chromium
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "Playwright Chromium installed."
+
+  # ── 5. Run tests ─────────────────────────────────────────────────────────────
+  # publishTestResults: false prevents DotNetCoreCLI@2 from auto-appending
+  # its own --logger and --results-directory flags to the command, which
+  # caused "Option '--results-directory' expects a single argument but 2
+  # were provided" when those flags were also in the arguments field.
+  - task: DotNetCoreCLI@2
+    displayName: 'dotnet test'
+    continueOnError: true
+    inputs:
+      command: 'test'
+      projects: '$(projectFile)'
+      arguments: >
+        --configuration $(buildConfiguration)
+        --no-build
+        --logger "trx;LogFileName=TestResults.trx"
+        --results-directory $(Agent.TempDirectory)
+      publishTestResults: false
+    env:
+      ANTHROPIC__APIKEY: $(ANTHROPIC__APIKEY)
+      BROWSER__HEADLESS: 'true'
+      BROWSER__SLOWMO: '0'
+
+  # ── 6. Publish NUnit / TRX results ───────────────────────────────────────────
+  - task: PublishTestResults@2
+    displayName: 'Publish test results'
+    condition: always()
+    inputs:
+      testResultsFormat: 'VSTest'
+      testResultsFiles: '$(Agent.TempDirectory)/**/*.trx'
+      mergeTestResults: true
+      failTaskOnFailedTests: false
+
+  # ── 7. Install Allure CLI ─────────────────────────────────────────────────────
+  - script: npm install -g allure-commandline
+    displayName: 'Install Allure CLI'
+    condition: always()
+
+  # ── 8. Ensure allure-results exists before generating / publishing ────────────
+  # If no tests ran (or the Allure adapter wrote no files) the folder will be
+  # absent and the subsequent steps would error. This guard creates it empty
+  # so the pipeline always completes cleanly.
+  - script: if not exist "allure-results" mkdir allure-results
+    displayName: 'Ensure allure-results folder exists'
+    condition: always()
+
+  # ── 9. Generate Allure HTML report ───────────────────────────────────────────
+  - script: npx --yes allure-commandline generate allure-results -o allure-report --clean
+    displayName: 'Generate Allure HTML report'
+    condition: always()
+
+  # ── 10. Publish artefacts ─────────────────────────────────────────────────────
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Allure results (raw)'
+    condition: always()
+    inputs:
+      targetPath: '$(System.DefaultWorkingDirectory)/allure-results'
+      artifact: 'allure-results'
+      publishLocation: 'pipeline'
+
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Allure HTML report'
+    condition: always()
+    inputs:
+      targetPath: '$(System.DefaultWorkingDirectory)/allure-report'
+      artifact: 'allure-report'
+      publishLocation: 'pipeline'
