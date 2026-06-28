@@ -33,8 +33,6 @@
 
     <!-- JSON parsing for Claude API responses -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
-
-    <!-- Allure reporting -->
   </ItemGroup>
 
   <ItemGroup>
@@ -57,5 +55,24 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      CRITICAL: exclude allure-results/ from compilation.
+      AllureReporter.AttachGeneratedFile copies .cs artefacts into allure-results/
+      as {uuid}-attachment.cs. Without this exclusion the SDK glob **/*.cs picks
+      them up and compiles them alongside the real sources, producing CS0101 / CS0111
+      duplicate-class errors for every attached file.
+    -->
+    <Compile Remove="allure-results\**" />
+ 
+    <!--
+      Feature files are intentionally NOT copied to the output directory.
+      Copying them caused Reqnroll to discover tests from both source (Features/)
+      and output (bin/Debug/net8.0/Features/), doubling every test run.
+      FeatureFileReader.cs reads them from the project root at runtime.
+    -->
+  </ItemGroup>
+ 
 
 </Project>

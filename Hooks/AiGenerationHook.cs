@@ -30,6 +30,7 @@ namespace Playwright.AiFramework.Hooks;
 ///   • Generated Page Object and Step Definitions attached after code generation
 ///   • On failure, the error message is attached as a text note
 /// </summary>
+
 [Binding]
 public class AiGenerationHook
 {
@@ -62,8 +63,6 @@ public class AiGenerationHook
         _claude = new AnthropicClient(apiKey);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-
     [BeforeScenario("ai_generated", Order = 10)]
     public async Task GenerateAndRunAsync()
     {
@@ -74,12 +73,12 @@ public class AiGenerationHook
 
         var scenarioText = await _featureReader.GetScenarioTextAsync(title);
 
-        // ── 1. Get initial action plan ────────────────────────────────────────
-        var actions = await _cache.TryGetAsync(title)
-                      ?? await GenerateInitialActionsAsync(scenarioText, title);
+        // ── 1. Get action plan ────────────────────────────────────────────────
+        var cachedActions = await _cache.TryGetAsync(title);
+        var isNewScenario = cachedActions is null;
+        var actions       = cachedActions ?? await GenerateInitialActionsAsync(scenarioText, title);
 
-        // Attach the action plan to the Allure report immediately
-        AllureReporter.AttachActionPlan(actions, "AI Action Plan (initial)");
+        AllureReporter.AttachActionPlan(actions, "AI Action Plan");
 
         // ── 2. Execute with self-healing retry ────────────────────────────────
         Exception? testFailure = null;
@@ -97,23 +96,33 @@ public class AiGenerationHook
             AllureReporter.AttachText(ex.Message, "Final Failure Details");
         }
 
-        // ── 3. Always save and attach code artefacts ──────────────────────────
-        Console.WriteLine("\n  📦 Saving code artefacts...");
-        try
+        // ── 3. Code artefacts — only on first run ─────────────────────────────
+        if (isNewScenario || testFailure is not null)
         {
-            var codeGen = new CodeGenerator(_claude);
-            await codeGen.GenerateArtifactsAsync(scenarioText, featureTitle);
+            Console.WriteLine("\n  📦 Generating code artefacts...");
+            try
+            {
+                var codeGen = new CodeGenerator(_claude);
 
-            // Attach generated files to the Allure report so reviewers can
-            // inspect the AI-generated code directly from the report UI
-            AttachGeneratedCode(featureTitle);
+                // Pass the verified action plan so PageObjectGenerator uses its
+                // proven locators instead of guessing from method names.
+                // The plan was produced by the site-aware TestActionGenerator
+                // prompt AND confirmed correct by executing in a real browser.
+                await codeGen.GenerateArtifactsAsync(scenarioText, featureTitle, actions);
+            }
+            catch (Exception codeEx)
+            {
+                Console.WriteLine($"  ⚠️  Code generation error (non-fatal): {codeEx.Message}");
+            }
         }
-        catch (Exception codeEx)
+        else
         {
-            Console.WriteLine($"  ⚠️  Code generation error (non-fatal): {codeEx.Message}");
+            Console.WriteLine("  ⏭️  Code artefacts already generated — skipping");
         }
 
-        // ── 4. Re-throw after artefacts are written ───────────────────────────
+        AttachGeneratedCode(featureTitle);
+
+        // ── 4. Re-throw after artefacts are saved ─────────────────────────────
         if (testFailure is not null)
         {
             Console.WriteLine("  💾 Artefacts saved for manual review\n");
@@ -121,8 +130,6 @@ public class AiGenerationHook
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Initial generation
     // ─────────────────────────────────────────────────────────────────────────
 
     private async Task<List<PlaywrightAction>> GenerateInitialActionsAsync(
@@ -140,10 +147,6 @@ public class AiGenerationHook
         return actions;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Retry loop
-    // ─────────────────────────────────────────────────────────────────────────
-
     private async Task ExecuteWithRetryAsync(
         List<PlaywrightAction> initialActions,
         string scenarioText,
@@ -156,8 +159,6 @@ public class AiGenerationHook
         {
             if (attempt > 1)
             {
-                // Each retry is a named Allure step so the report clearly shows
-                // how many self-heal iterations were needed
                 await AllureReporter.StepAsync(
                     $"🔄 Self-heal retry {attempt - 1}/{MaxRetries}",
                     async () =>
@@ -165,10 +166,7 @@ public class AiGenerationHook
                         await ResetPageAsync();
                         actions = await HealActionsAsync(actions, scenarioText, lastError!);
                         await _cache.SaveAsync(cacheKey, actions);
-
-                        // Attach the healed plan so each retry's attempt is traceable
-                        AllureReporter.AttachActionPlan(
-                            actions, $"Healed Action Plan (retry {attempt - 1})");
+                        AllureReporter.AttachActionPlan(actions, $"Healed Action Plan (retry {attempt - 1})");
                     });
             }
 
@@ -185,7 +183,6 @@ public class AiGenerationHook
             {
                 lastError = ex;
                 Console.WriteLine($"\n  ❌ Attempt {attempt} failed: {FirstLine(ex.Message)}");
-
                 if (attempt > MaxRetries)
                     Console.WriteLine($"  🚫 Exhausted all {MaxRetries} retry attempt(s)");
             }
@@ -193,10 +190,6 @@ public class AiGenerationHook
 
         throw lastError!;
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Self-healing
-    // ─────────────────────────────────────────────────────────────────────────
 
     private async Task<List<PlaywrightAction>> HealActionsAsync(
         List<PlaywrightAction> failedActions,
@@ -217,10 +210,10 @@ public class AiGenerationHook
         sb.AppendLine();
         sb.AppendLine("SELF-HEAL GUIDANCE:");
         sb.AppendLine("  strict mode / resolved to N elements → add or correct the 'index' field");
-        sb.AppendLine("  element not found / waiting for locator → try different locatorType or locatorName");
-        sb.AppendLine("  expected to contain text / not found  → locator or expected text is wrong");
-        sb.AppendLine("  checkbox no accessible name           → locatorName must be \"\" with index");
-        sb.AppendLine("  timeout                               → insert wait_for_url or assert_visible first");
+        sb.AppendLine("  element not found                    → try different locatorType or locatorName");
+        sb.AppendLine("  expected to contain text / not found → locator or expected text is wrong");
+        sb.AppendLine("  checkbox no accessible name          → locatorName must be \"\" with index");
+        sb.AppendLine("  timeout                              → insert wait_for_url or assert_visible first");
         sb.AppendLine();
         sb.Append("Return ONLY the corrected JSON action array — same schema, no explanation.");
 
@@ -232,43 +225,6 @@ public class AiGenerationHook
         PrintActionPlan(healed);
         return healed;
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Allure artefact attachment
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private static void AttachGeneratedCode(string featureTitle)
-    {
-        var root          = FindProjectRoot();
-        var pageClassName = DerivePageClassName(featureTitle);
-        var stepClassName = pageClassName.Replace("Page", "Steps");
-
-        var pageFile = Path.Combine(root, "Pages",           $"{pageClassName}.generated.cs");
-        var stepFile = Path.Combine(root, "StepDefinitions", $"{stepClassName}.generated.cs");
-
-        AllureReporter.AttachGeneratedFile(pageFile, $"Generated: {pageClassName}.cs");
-        AllureReporter.AttachGeneratedFile(stepFile, $"Generated: {stepClassName}.cs");
-    }
-
-    private static string DerivePageClassName(string featureTitle)
-    {
-        var clean = System.Text.RegularExpressions.Regex.Replace(
-            featureTitle, @"\b(Feature|Tests?|Specs?)\b", "",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
-
-        var pascal = string.Concat(
-            System.Text.RegularExpressions.Regex
-                .Replace(clean, @"[^a-zA-Z0-9\s]", "")
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Select(w => char.ToUpper(w[0]) + w[1..]));
-
-        return pascal.EndsWith("Page", StringComparison.OrdinalIgnoreCase)
-            ? pascal : pascal + "Page";
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Page reset
-    // ─────────────────────────────────────────────────────────────────────────
 
     private async Task ResetPageAsync()
     {
@@ -289,9 +245,25 @@ public class AiGenerationHook
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────
+    private static void AttachGeneratedCode(string featureTitle)
+    {
+        var root          = FindProjectRoot();
+        var pageClassName = DerivePageClassName(featureTitle);
+        var stepClassName = pageClassName.Replace("Page", "Steps");
+
+        AllureReporter.AttachGeneratedFile(
+            Path.Combine(root, "Pages",           $"{pageClassName}.generated.cs"),
+            $"Generated: {pageClassName}.cs");
+        AllureReporter.AttachGeneratedFile(
+            Path.Combine(root, "Pages",           $"{pageClassName}.cs"),
+            $"Graduated: {pageClassName}.cs");
+        AllureReporter.AttachGeneratedFile(
+            Path.Combine(root, "StepDefinitions", $"{stepClassName}.generated.cs"),
+            $"Generated: {stepClassName}.cs");
+        AllureReporter.AttachGeneratedFile(
+            Path.Combine(root, "StepDefinitions", $"{stepClassName}.cs"),
+            $"Graduated: {stepClassName}.cs");
+    }
 
     private static List<PlaywrightAction> ParseActions(string rawJson, string label)
     {
@@ -306,6 +278,22 @@ public class AiGenerationHook
         return JsonConvert.DeserializeObject<List<PlaywrightAction>>(json.Trim())
                ?? throw new InvalidOperationException(
                    $"Claude returned invalid JSON ({label}):\n{rawJson}");
+    }
+
+    private static string DerivePageClassName(string featureTitle)
+    {
+        var clean = System.Text.RegularExpressions.Regex.Replace(
+            featureTitle, @"\b(Feature|Tests?|Specs?)\b", "",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+
+        var pascal = string.Concat(
+            System.Text.RegularExpressions.Regex
+                .Replace(clean, @"[^a-zA-Z0-9\s]", "")
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Select(w => char.ToUpper(w[0]) + w[1..]));
+
+        return pascal.EndsWith("Page", StringComparison.OrdinalIgnoreCase)
+            ? pascal : pascal + "Page";
     }
 
     private static string FirstLine(string message) =>

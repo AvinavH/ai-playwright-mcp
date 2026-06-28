@@ -1,6 +1,6 @@
 using Allure.Net.Commons;
-namespace Playwright.AiFramework.Reporting;
 
+namespace Playwright.AiFramework.Reporting;
 /// <summary>
 /// Central facade for all Allure reporting operations in the framework.
 ///
@@ -13,58 +13,46 @@ namespace Playwright.AiFramework.Reporting;
 /// </summary>
 public static class AllureReporter
 {
-    // ─────────────────────────────────────────────────────────────────────────
-    // Step wrapping
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // ── Step wrapping ─────────────────────────────────────────────────────────
     /// <summary>
     /// Executes an async action as a named Allure step.
     /// Status is set to passed on success, failed on exception (which is re-thrown).
     /// Uses AllureLifecycle directly for full async compatibility.
     /// </summary>
     public static async Task StepAsync(string name, Func<Task> asyncAction)
-{
-    // No UUID — AllureLifecycle 2.x manages step identity internally
-    AllureLifecycle.Instance.StartStep(new StepResult
     {
-        name  = name,
-        stage = Stage.running
-    });
-
-    try
-    {
-        await asyncAction();
-
-        AllureLifecycle.Instance.StopStep(s =>
+        AllureLifecycle.Instance.StartStep(new StepResult
         {
-            s.status = Status.passed;
-            s.stage  = Stage.finished;
+            name  = name,
+            stage = Stage.running
         });
-    }
-    catch (Exception ex)
-    {
-        AllureLifecycle.Instance.StopStep(s =>
+        try
         {
-            s.status        = Status.failed;
-            s.stage         = Stage.finished;
-            s.statusDetails = new StatusDetails
+            await asyncAction();
+            AllureLifecycle.Instance.StopStep(s =>
             {
-                message = ex.Message.Split('\n')[0],
-                trace   = ex.StackTrace
-            };
-        });
-        throw;
+                s.status = Status.passed;
+                s.stage  = Stage.finished;
+            });
+        }
+        catch (Exception ex)
+        {
+            AllureLifecycle.Instance.StopStep(s =>
+            {
+                s.status        = Status.failed;
+                s.stage         = Stage.finished;
+                s.statusDetails = new StatusDetails
+                {
+                    message = ex.Message.Split('\n')[0],
+                    trace   = ex.StackTrace
+                };
+            });
+            throw;
+        }
     }
-}
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Attachments
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Attachments ───────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Attaches the AI-generated action plan as a JSON attachment.
-    /// Visible in the Allure report under "Attachments" for the test case.
-    /// </summary>
     public static void AttachActionPlan(IReadOnlyList<PlaywrightAction> actions, string label)
     {
         try
@@ -79,10 +67,6 @@ public static class AllureReporter
         }
     }
 
-    /// <summary>
-    /// Captures a full-page screenshot and attaches it to the current test/step.
-    /// Silent on failure — a missing screenshot is not worth failing the report.
-    /// </summary>
     public static async Task AttachScreenshotAsync(IPage page, string name)
     {
         try
@@ -97,16 +81,21 @@ public static class AllureReporter
     }
 
     /// <summary>
-    /// Attaches a generated .cs file so reviewers can inspect code artefacts
-    /// directly in the Allure report without opening the project.
+    /// Attaches a generated .cs file to the Allure report.
+    ///
+    /// IMPORTANT: the extension is intentionally .txt — NOT .cs.
+    /// Allure saves attachments as {uuid}-attachment.{ext} inside allure-results/.
+    /// If .cs is used, the .NET SDK glob **/*.cs compiles those copies alongside
+    /// the real source files and produces CS0101 duplicate-class errors.
+    /// .txt produces identical display in the Allure UI (content is shown as
+    /// plain text regardless of extension) while keeping the compiler happy.
     /// </summary>
     public static void AttachGeneratedFile(string filePath, string label)
     {
         try
         {
             if (!File.Exists(filePath)) return;
-            var bytes = File.ReadAllBytes(filePath);
-            AllureApi.AddAttachment(label, "text/plain", bytes, ".cs");
+            AllureApi.AddAttachment(label, "text/plain", File.ReadAllBytes(filePath), ".txt");
         }
         catch (Exception ex)
         {
@@ -114,16 +103,11 @@ public static class AllureReporter
         }
     }
 
-    /// <summary>
-    /// Attaches a plain-text error description as a step-level note.
-    /// Useful for surfacing retry failure reasons clearly in the report.
-    /// </summary>
     public static void AttachText(string content, string label)
     {
         try
         {
-            var bytes = Encoding.UTF8.GetBytes(content);
-            AllureApi.AddAttachment(label, "text/plain", bytes, ".txt");
+            AllureApi.AddAttachment(label, "text/plain", Encoding.UTF8.GetBytes(content), ".txt");
         }
         catch (Exception ex)
         {
@@ -131,24 +115,17 @@ public static class AllureReporter
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Environment panel
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Environment ───────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Writes environment.properties to the allure-results directory.
-    /// This populates the "Environment" panel visible on the Allure overview page.
-    /// Must be called once before tests run (use a [BeforeTestRun] hook).
-    /// </summary>
-    public static void WriteEnvironmentProperties(string allureResultsDir,
-        Dictionary<string, string> properties)
+    public static void WriteEnvironmentProperties(
+        string allureResultsDir, Dictionary<string, string> properties)
     {
         try
         {
             Directory.CreateDirectory(allureResultsDir);
-            var lines = properties.Select(kv => $"{kv.Key}={kv.Value}");
             File.WriteAllLines(
-                Path.Combine(allureResultsDir, "environment.properties"), lines);
+                Path.Combine(allureResultsDir, "environment.properties"),
+                properties.Select(kv => $"{kv.Key}={kv.Value}"));
         }
         catch (Exception ex)
         {
@@ -156,10 +133,6 @@ public static class AllureReporter
         }
     }
 
-    /// <summary>
-    /// Copies a categories.json file into allure-results so Allure's failure
-    /// triage view can group errors by pattern on report generation.
-    /// </summary>
     public static void CopyCategories(string sourceFile, string allureResultsDir)
     {
         try
@@ -167,8 +140,7 @@ public static class AllureReporter
             if (!File.Exists(sourceFile)) return;
             Directory.CreateDirectory(allureResultsDir);
             File.Copy(sourceFile,
-                Path.Combine(allureResultsDir, "categories.json"),
-                overwrite: true);
+                Path.Combine(allureResultsDir, "categories.json"), overwrite: true);
         }
         catch (Exception ex)
         {

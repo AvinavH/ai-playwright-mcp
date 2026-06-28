@@ -20,14 +20,12 @@ namespace Playwright.AiFramework.Features
     [global::NUnit.Framework.TestFixtureAttribute()]
     [global::NUnit.Framework.DescriptionAttribute("Add Remove Elements")]
     [global::NUnit.Framework.FixtureLifeCycleAttribute(global::NUnit.Framework.LifeCycle.InstancePerTestCase)]
-    [global::NUnit.Framework.CategoryAttribute("ai_generated")]
     public partial class AddRemoveElementsFeature
     {
         
         private global::Reqnroll.ITestRunner testRunner;
         
-        private static string[] featureTags = new string[] {
-                "ai_generated"};
+        private static string[] featureTags = ((string[])(null));
         
         private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "Add Remove Elements", "  Verifies dynamic element creation and deletion\r\n  at https://the-internet.herok" +
                 "uapp.com/add_remove_elements/", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
@@ -121,7 +119,7 @@ namespace Playwright.AiFramework.Features
             global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Add an element and then delete it", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 6
+#line 5
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -131,19 +129,19 @@ namespace Playwright.AiFramework.Features
             else
             {
                 await this.ScenarioStartAsync();
-#line 7
+#line 6
     await testRunner.GivenAsync("I navigate to the add remove elements page", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
-#line 8
+#line 7
     await testRunner.WhenAsync("I click the Add Element button", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 9
+#line 8
     await testRunner.ThenAsync("a Delete button should be visible", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 10
+#line 9
     await testRunner.WhenAsync("I click the Delete button", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 11
+#line 10
     await testRunner.ThenAsync("no Delete button should be visible", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
             }
@@ -160,7 +158,7 @@ namespace Playwright.AiFramework.Features
             global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Add multiple elements", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 13
+#line 12
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -170,13 +168,13 @@ namespace Playwright.AiFramework.Features
             else
             {
                 await this.ScenarioStartAsync();
-#line 14
+#line 13
     await testRunner.GivenAsync("I navigate to the add remove elements page", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
-#line 15
+#line 14
     await testRunner.WhenAsync("I click the Add Element button twice", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 16
+#line 15
     await testRunner.ThenAsync("two Delete buttons should be present", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
             }

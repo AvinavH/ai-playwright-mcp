@@ -20,14 +20,12 @@ namespace Playwright.AiFramework.Features
     [global::NUnit.Framework.TestFixtureAttribute()]
     [global::NUnit.Framework.DescriptionAttribute("Checkboxes Page")]
     [global::NUnit.Framework.FixtureLifeCycleAttribute(global::NUnit.Framework.LifeCycle.InstancePerTestCase)]
-    [global::NUnit.Framework.CategoryAttribute("ai_generated")]
     public partial class CheckboxesPageFeature
     {
         
         private global::Reqnroll.ITestRunner testRunner;
         
-        private static string[] featureTags = new string[] {
-                "ai_generated"};
+        private static string[] featureTags = ((string[])(null));
         
         private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "Checkboxes Page", "  Verifies checkbox interactions at https://the-internet.herokuapp.com/checkboxes" +
                 "\r\n  Demonstrates the use of role:checkbox + index for elements with no accessibl" +
@@ -122,7 +120,7 @@ namespace Playwright.AiFramework.Features
             global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Check the first checkbox", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 6
+#line 5
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -132,13 +130,13 @@ namespace Playwright.AiFramework.Features
             else
             {
                 await this.ScenarioStartAsync();
-#line 7
+#line 6
     await testRunner.GivenAsync("I navigate to the checkboxes page", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
-#line 8
+#line 7
     await testRunner.WhenAsync("I check the first checkbox", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 9
+#line 8
     await testRunner.ThenAsync("the first checkbox should be checked", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
             }
@@ -155,7 +153,7 @@ namespace Playwright.AiFramework.Features
             global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("Uncheck the second checkbox", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 11
+#line 10
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -165,13 +163,13 @@ namespace Playwright.AiFramework.Features
             else
             {
                 await this.ScenarioStartAsync();
-#line 12
+#line 11
     await testRunner.GivenAsync("I navigate to the checkboxes page", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
-#line 13
+#line 12
     await testRunner.WhenAsync("I uncheck the second checkbox", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 14
+#line 13
     await testRunner.ThenAsync("the second checkbox should not be checked", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
             }
