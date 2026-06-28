@@ -48,11 +48,35 @@ steps:
       arguments: '--configuration $(buildConfiguration) --no-restore'
 
   # ── 4. Install Playwright Chromium ───────────────────────────────────────────
-  # Uses playwright.cmd from the .playwright/node folder bundled by the NuGet
-  # package — no pwsh (PowerShell 7) required. The .cmd file is a standard
-  # Windows batch file that runs with cmd.exe which is always available.
-  - script: 'bin\$(buildConfiguration)\net8.0\.playwright\node\win32_x64\playwright.cmd install chromium'
+  # playwright.ps1 requires PowerShell 7 (pwsh).
+  # This step installs pwsh automatically if it is not already present,
+  # so no manual machine setup is needed.
+  # After the first pipeline run, pwsh is cached on the agent and the
+  # download is skipped on all subsequent runs.
+  - task: PowerShell@2
     displayName: 'Install Playwright Chromium'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $pwshExe = "C:\Program Files\PowerShell\7\pwsh.exe"
+
+        if (-not (Test-Path $pwshExe)) {
+          Write-Host "PowerShell 7 not found — downloading installer..."
+          $msi = "$env:TEMP\pwsh7.msi"
+          Invoke-WebRequest `
+            -Uri "https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.msi" `
+            -OutFile $msi `
+            -UseBasicParsing
+          Write-Host "Installing PowerShell 7 silently..."
+          Start-Process msiexec -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
+          Write-Host "PowerShell 7 installed successfully."
+        } else {
+          Write-Host "PowerShell 7 already present at $pwshExe"
+        }
+
+        Write-Host "Installing Playwright Chromium..."
+        & $pwshExe "bin\$(buildConfiguration)\net8.0\playwright.ps1" install chromium
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # ── 5. Run tests ─────────────────────────────────────────────────────────────
   - task: DotNetCoreCLI@2
@@ -81,20 +105,18 @@ steps:
       mergeTestResults: true
       failTaskOnFailedTests: false
 
-  # ── 7. Install Allure CLI ─────────────────────────────────────────────────────
+  # ── 7. Install Allure CLI and generate report ─────────────────────────────────
+  # npx allure-commandline bypasses the PATH refresh issue — it finds the
+  # package from the npm cache directly after npm install -g completes.
   - script: npm install -g allure-commandline
     displayName: 'Install Allure CLI'
     condition: always()
 
-  # ── 8. Generate Allure HTML report ───────────────────────────────────────────
-  # Uses "npx allure-commandline" instead of bare "allure" to avoid the Windows
-  # PATH refresh issue — npx finds the package from the npm cache directly
-  # without needing the PATH to be updated between pipeline steps.
   - script: npx --yes allure-commandline generate allure-results -o allure-report --clean
     displayName: 'Generate Allure HTML report'
     condition: always()
 
-  # ── 9. Publish Allure raw results ────────────────────────────────────────────
+  # ── 8. Publish artefacts ──────────────────────────────────────────────────────
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure results (raw)'
     condition: always()
@@ -103,7 +125,6 @@ steps:
       artifact: 'allure-results'
       publishLocation: 'pipeline'
 
-  # ── 10. Publish Allure HTML report ───────────────────────────────────────────
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure HTML report'
     condition: always()
