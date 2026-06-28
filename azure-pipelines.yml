@@ -1,13 +1,6 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # AI Playwright C# Framework — Azure DevOps CI Pipeline
 # ══════════════════════════════════════════════════════════════════════════════
-#
-# Prerequisites on the self-hosted agent:
-#   • PowerShell 7 (pwsh) — required by playwright.ps1
-#       winget install Microsoft.PowerShell
-#   • Node.js — required for allure-commandline
-#   • .NET 8 SDK
-# ══════════════════════════════════════════════════════════════════════════════
 
 trigger:
   branches:
@@ -55,18 +48,11 @@ steps:
       arguments: '--configuration $(buildConfiguration) --no-restore'
 
   # ── 4. Install Playwright Chromium ───────────────────────────────────────────
-  # Requires PowerShell 7 (pwsh) on the agent.
-  # One-time agent setup: winget install Microsoft.PowerShell
-  - task: PowerShell@2
+  # Uses playwright.cmd from the .playwright/node folder bundled by the NuGet
+  # package — no pwsh (PowerShell 7) required. The .cmd file is a standard
+  # Windows batch file that runs with cmd.exe which is always available.
+  - script: 'bin\$(buildConfiguration)\net8.0\.playwright\node\win32_x64\playwright.cmd install chromium'
     displayName: 'Install Playwright Chromium'
-    inputs:
-      targetType: 'inline'
-      pwsh: true                  # forces PowerShell 7 (pwsh) for this task
-      script: |
-        $script = "bin\$(buildConfiguration)\net8.0\playwright.ps1"
-        Write-Host "Installing Chromium via: $script"
-        & $script install chromium
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # ── 5. Run tests ─────────────────────────────────────────────────────────────
   - task: DotNetCoreCLI@2
@@ -85,7 +71,7 @@ steps:
       BROWSER__HEADLESS: 'true'
       BROWSER__SLOWMO: '0'
 
-  # ── 6. Publish NUnit test results ────────────────────────────────────────────
+  # ── 6. Publish test results ───────────────────────────────────────────────────
   - task: PublishTestResults@2
     displayName: 'Publish test results'
     condition: always()
@@ -95,27 +81,20 @@ steps:
       mergeTestResults: true
       failTaskOnFailedTests: false
 
-  # ── 7. Install Allure CLI and generate report ─────────────────────────────────
-  # Combined into one step so PATH is refreshed before allure is called.
-  # Separate steps lose the npm global PATH update between executions.
-  - task: PowerShell@2
+  # ── 7. Install Allure CLI ─────────────────────────────────────────────────────
+  - script: npm install -g allure-commandline
+    displayName: 'Install Allure CLI'
+    condition: always()
+
+  # ── 8. Generate Allure HTML report ───────────────────────────────────────────
+  # Uses "npx allure-commandline" instead of bare "allure" to avoid the Windows
+  # PATH refresh issue — npx finds the package from the npm cache directly
+  # without needing the PATH to be updated between pipeline steps.
+  - script: npx --yes allure-commandline generate allure-results -o allure-report --clean
     displayName: 'Generate Allure HTML report'
     condition: always()
-    inputs:
-      targetType: 'inline'
-      script: |
-        Write-Host "Installing allure-commandline..."
-        npm install -g allure-commandline
 
-        # Refresh PATH so allure.cmd registered by npm is visible in this session
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") `
-                  + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
-
-        Write-Host "Generating Allure report..."
-        allure generate allure-results -o allure-report --clean
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-  # ── 8. Publish Allure raw results ────────────────────────────────────────────
+  # ── 9. Publish Allure raw results ────────────────────────────────────────────
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure results (raw)'
     condition: always()
@@ -124,7 +103,7 @@ steps:
       artifact: 'allure-results'
       publishLocation: 'pipeline'
 
-  # ── 9. Publish Allure HTML report ────────────────────────────────────────────
+  # ── 10. Publish Allure HTML report ───────────────────────────────────────────
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure HTML report'
     condition: always()
