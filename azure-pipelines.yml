@@ -2,15 +2,11 @@
 # AI Playwright C# Framework — Azure DevOps CI Pipeline
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# Stages:
-#   1. Build    — restore, compile, install Playwright Chromium
-#   2. Test     — run Reqnroll + Playwright tests in headless mode
-#   3. Report   — generate Allure HTML report, publish as pipeline artefact
-#
-# Prerequisites:
-#   • Self-hosted Windows agent registered in the Default pool
-#   • Variable group "ai-playwright-secrets" containing ANTHROPIC__APIKEY
-#   • Node.js available on the agent (for allure-commandline)
+# Prerequisites on the self-hosted agent:
+#   • PowerShell 7 (pwsh) — required by playwright.ps1
+#       winget install Microsoft.PowerShell
+#   • Node.js — required for allure-commandline
+#   • .NET 8 SDK
 # ══════════════════════════════════════════════════════════════════════════════
 
 trigger:
@@ -24,33 +20,26 @@ pr:
     include:
       - main
 
-# ── Agent pool ────────────────────────────────────────────────────────────────
 pool:
-  name: Default        # self-hosted agent; no Microsoft-hosted minutes consumed
+  name: Default
 
-# ── Variables ─────────────────────────────────────────────────────────────────
 variables:
-  - group: ai-playwright-secrets          # contains ANTHROPIC__APIKEY (secret)
+  - group: ai-playwright-secrets
   - name:  buildConfiguration
     value: 'Debug'
   - name:  projectFile
     value: 'Playwright.AiFramework.csproj'
-  - name:  dotnetVersion
-    value: '8.0.x'
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Steps
-# ══════════════════════════════════════════════════════════════════════════════
 steps:
 
-  # ── 1. SDK ──────────────────────────────────────────────────────────────────
+  # ── 1. .NET SDK ──────────────────────────────────────────────────────────────
   - task: UseDotNet@2
-    displayName: 'Use .NET $(dotnetVersion)'
+    displayName: 'Use .NET 8'
     inputs:
       packageType: 'sdk'
-      version: '$(dotnetVersion)'
+      version: '8.0.x'
 
-  # ── 2. Restore ──────────────────────────────────────────────────────────────
+  # ── 2. Restore ───────────────────────────────────────────────────────────────
   - task: DotNetCoreCLI@2
     displayName: 'dotnet restore'
     inputs:
@@ -66,24 +55,20 @@ steps:
       arguments: '--configuration $(buildConfiguration) --no-restore'
 
   # ── 4. Install Playwright Chromium ───────────────────────────────────────────
-  # The playwright.ps1 script is generated into the build output by the
-  # Microsoft.Playwright package. Running it here ensures the correct browser
-  # version is installed regardless of what is already on the agent.
+  # Requires PowerShell 7 (pwsh) on the agent.
+  # One-time agent setup: winget install Microsoft.PowerShell
   - task: PowerShell@2
     displayName: 'Install Playwright Chromium'
     inputs:
       targetType: 'inline'
+      pwsh: true                  # forces PowerShell 7 (pwsh) for this task
       script: |
         $script = "bin\$(buildConfiguration)\net8.0\playwright.ps1"
-        Write-Host "Running: $script install chromium"
-        & pwsh $script install chromium
+        Write-Host "Installing Chromium via: $script"
+        & $script install chromium
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # ── 5. Run tests ─────────────────────────────────────────────────────────────
-  # BROWSER__HEADLESS overrides appsettings.json so Chromium runs headless in CI.
-  # BROWSER__SLOWMO set to 0 — no artificial delay needed in unattended runs.
-  # ANTHROPIC__APIKEY is mapped from the secret variable group.
-  # continueOnError: true ensures reporting steps always execute even on failure.
   - task: DotNetCoreCLI@2
     displayName: 'dotnet test'
     continueOnError: true
@@ -100,8 +85,7 @@ steps:
       BROWSER__HEADLESS: 'true'
       BROWSER__SLOWMO: '0'
 
-  # ── 6. Publish NUnit / TRX test results ──────────────────────────────────────
-  # Shows pass/fail counts natively in the Azure DevOps pipeline summary.
+  # ── 6. Publish NUnit test results ────────────────────────────────────────────
   - task: PublishTestResults@2
     displayName: 'Publish test results'
     condition: always()
@@ -111,23 +95,27 @@ steps:
       mergeTestResults: true
       failTaskOnFailedTests: false
 
-  # ── 7. Install Allure CLI and Generate Report ─────────────────────────────────────────────────────
+  # ── 7. Install Allure CLI and generate report ─────────────────────────────────
+  # Combined into one step so PATH is refreshed before allure is called.
+  # Separate steps lose the npm global PATH update between executions.
   - task: PowerShell@2
-    displayName: 'Install Allure CLI and Generate Report'
+    displayName: 'Generate Allure HTML report'
     condition: always()
     inputs:
       targetType: 'inline'
       script: |
+        Write-Host "Installing allure-commandline..."
         npm install -g allure-commandline
 
-        # Refresh PATH so allure.cmd is visible in this same session
+        # Refresh PATH so allure.cmd registered by npm is visible in this session
         $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") `
                   + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
 
+        Write-Host "Generating Allure report..."
         allure generate allure-results -o allure-report --clean
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # ── 8. Publish Allure raw results ────────────────────────────────────────────
-  # Raw results are needed to build trend/history charts across pipeline runs.
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure results (raw)'
     condition: always()
@@ -136,8 +124,7 @@ steps:
       artifact: 'allure-results'
       publishLocation: 'pipeline'
 
-  # ── 9. Publish Allure HTML report ───────────────────────────────────────────
-  # Download this artefact from the pipeline run summary to view the full report.
+  # ── 9. Publish Allure HTML report ────────────────────────────────────────────
   - task: PublishPipelineArtifact@1
     displayName: 'Publish Allure HTML report'
     condition: always()
