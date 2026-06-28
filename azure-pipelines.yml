@@ -1,0 +1,145 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# AI Playwright C# Framework — Azure DevOps CI Pipeline
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Stages:
+#   1. Build    — restore, compile, install Playwright Chromium
+#   2. Test     — run Reqnroll + Playwright tests in headless mode
+#   3. Report   — generate Allure HTML report, publish as pipeline artefact
+#
+# Prerequisites:
+#   • Self-hosted Windows agent registered in the Default pool
+#   • Variable group "ai-playwright-secrets" containing ANTHROPIC__APIKEY
+#   • Node.js available on the agent (for allure-commandline)
+# ══════════════════════════════════════════════════════════════════════════════
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+      - enhancement/*
+
+pr:
+  branches:
+    include:
+      - main
+
+# ── Agent pool ────────────────────────────────────────────────────────────────
+pool:
+  name: Default        # self-hosted agent; no Microsoft-hosted minutes consumed
+
+# ── Variables ─────────────────────────────────────────────────────────────────
+variables:
+  - group: ai-playwright-secrets          # contains ANTHROPIC__APIKEY (secret)
+  - name:  buildConfiguration
+    value: 'Debug'
+  - name:  projectFile
+    value: 'Playwright.AiFramework.csproj'
+  - name:  dotnetVersion
+    value: '8.0.x'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Steps
+# ══════════════════════════════════════════════════════════════════════════════
+steps:
+
+  # ── 1. SDK ──────────────────────────────────────────────────────────────────
+  - task: UseDotNet@2
+    displayName: 'Use .NET $(dotnetVersion)'
+    inputs:
+      packageType: 'sdk'
+      version: '$(dotnetVersion)'
+
+  # ── 2. Restore ──────────────────────────────────────────────────────────────
+  - task: DotNetCoreCLI@2
+    displayName: 'dotnet restore'
+    inputs:
+      command: 'restore'
+      projects: '$(projectFile)'
+
+  # ── 3. Build ─────────────────────────────────────────────────────────────────
+  - task: DotNetCoreCLI@2
+    displayName: 'dotnet build'
+    inputs:
+      command: 'build'
+      projects: '$(projectFile)'
+      arguments: '--configuration $(buildConfiguration) --no-restore'
+
+  # ── 4. Install Playwright Chromium ───────────────────────────────────────────
+  # The playwright.ps1 script is generated into the build output by the
+  # Microsoft.Playwright package. Running it here ensures the correct browser
+  # version is installed regardless of what is already on the agent.
+  - task: PowerShell@2
+    displayName: 'Install Playwright Chromium'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $script = "bin\$(buildConfiguration)\net8.0\playwright.ps1"
+        Write-Host "Running: $script install chromium"
+        & pwsh $script install chromium
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # ── 5. Run tests ─────────────────────────────────────────────────────────────
+  # BROWSER__HEADLESS overrides appsettings.json so Chromium runs headless in CI.
+  # BROWSER__SLOWMO set to 0 — no artificial delay needed in unattended runs.
+  # ANTHROPIC__APIKEY is mapped from the secret variable group.
+  # continueOnError: true ensures reporting steps always execute even on failure.
+  - task: DotNetCoreCLI@2
+    displayName: 'dotnet test'
+    continueOnError: true
+    inputs:
+      command: 'test'
+      projects: '$(projectFile)'
+      arguments: >
+        --configuration $(buildConfiguration)
+        --no-build
+        --logger "trx;LogFileName=TestResults.trx"
+        --results-directory $(Agent.TempDirectory)
+    env:
+      ANTHROPIC__APIKEY: $(ANTHROPIC__APIKEY)
+      BROWSER__HEADLESS: 'true'
+      BROWSER__SLOWMO: '0'
+
+  # ── 6. Publish NUnit / TRX test results ──────────────────────────────────────
+  # Shows pass/fail counts natively in the Azure DevOps pipeline summary.
+  - task: PublishTestResults@2
+    displayName: 'Publish test results'
+    condition: always()
+    inputs:
+      testResultsFormat: 'VSTest'
+      testResultsFiles: '$(Agent.TempDirectory)/**/*.trx'
+      mergeTestResults: true
+      failTaskOnFailedTests: false
+
+  # ── 7. Install Allure CLI ─────────────────────────────────────────────────────
+  - script: npm install -g allure-commandline --quiet
+    displayName: 'Install Allure CLI'
+    condition: always()
+
+  # ── 8. Generate Allure HTML report ───────────────────────────────────────────
+  # allure-results is written to the project root by allureConfig.json
+  # ("directory": "../../../allure-results" redirects from bin/Debug/net8.0/).
+  - script: allure generate allure-results -o allure-report --clean
+    displayName: 'Generate Allure HTML report'
+    condition: always()
+
+  # ── 9. Publish Allure raw results ────────────────────────────────────────────
+  # Raw results are needed to build trend/history charts across pipeline runs.
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Allure results (raw)'
+    condition: always()
+    inputs:
+      targetPath: '$(System.DefaultWorkingDirectory)/allure-results'
+      artifact: 'allure-results'
+      publishLocation: 'pipeline'
+
+  # ── 10. Publish Allure HTML report ───────────────────────────────────────────
+  # Download this artefact from the pipeline run summary to view the full report.
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish Allure HTML report'
+    condition: always()
+    inputs:
+      targetPath: '$(System.DefaultWorkingDirectory)/allure-report'
+      artifact: 'allure-report'
+      publishLocation: 'pipeline'
