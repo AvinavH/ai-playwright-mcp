@@ -1,0 +1,37 @@
+[
+  {
+    "name": "AI Generation Failures",
+    "messageRegex": ".*Anthropic API.*|.*Claude returned invalid.*|.*invalid JSON.*",
+    "matchedStatuses": ["failed", "broken"]
+  },
+  {
+    "name": "Element Not Found",
+    "messageRegex": ".*waiting for locator.*|.*element not found.*|.*No element.*",
+    "matchedStatuses": ["failed"]
+  },
+  {
+    "name": "Strict Mode Violation",
+    "messageRegex": ".*strict mode violation.*|.*resolved to.*elements.*",
+    "matchedStatuses": ["failed"]
+  },
+  {
+    "name": "Assertion Failures",
+    "messageRegex": ".*Locator expected.*|.*expected to contain.*|.*ToHaveURL.*",
+    "matchedStatuses": ["failed"]
+  },
+  {
+    "name": "Self-Healing Exhausted",
+    "messageRegex": ".*Exhausted all.*retry.*|.*failed after.*retry.*",
+    "matchedStatuses": ["failed"]
+  },
+  {
+    "name": "API Key Not Configured",
+    "messageRegex": ".*Anthropic:ApiKey.*|.*ANTHROPIC__APIKEY.*",
+    "matchedStatuses": ["broken"]
+  },
+  {
+    "name": "Navigation / Timeout",
+    "messageRegex": ".*Timeout.*|.*net::ERR.*|.*Navigation.*",
+    "matchedStatuses": ["failed", "broken"]
+  }
+]

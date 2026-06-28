@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <!-- Playwright browser automation -->
+    <PackageReference Include="Allure.Net.Commons" Version="2.15.0" />
+    <PackageReference Include="Allure.Reqnroll" Version="2.15.0" />
     <PackageReference Include="DotNetEnv" Version="3.1.0" />
     <PackageReference Include="Microsoft.Playwright" Version="1.44.0" />
 
@@ -22,7 +24,7 @@
     <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
 
     <!-- Reqnroll BDD framework (NUnit integration) -->
-    <PackageReference Include="Reqnroll.NUnit" Version="2.1.1" />
+    <PackageReference Include="Reqnroll.NUnit" Version="3.3.4" />
 
     <!-- Configuration: appsettings.json + env-var overrides -->
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
@@ -30,7 +32,7 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="8.0.0" />
 
     <!-- JSON parsing for Claude API responses -->
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
   </ItemGroup>
 
   <ItemGroup>
@@ -38,9 +40,39 @@
     <None Update="appsettings.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="Features\**\*.feature">
+     <!--
+      Always (not PreserveNewest) forces the file to be re-copied on every build.
+      PreserveNewest skips the copy when the build thinks it is unchanged, which
+      means the output directory can end up with a stale version of the config.
+    -->
+    <None Update="allureConfig.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="allure-categories.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update=".env" Condition="Exists('.env')">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      CRITICAL: exclude allure-results/ from compilation.
+      AllureReporter.AttachGeneratedFile copies .cs artefacts into allure-results/
+      as {uuid}-attachment.cs. Without this exclusion the SDK glob **/*.cs picks
+      them up and compiles them alongside the real sources, producing CS0101 / CS0111
+      duplicate-class errors for every attached file.
+    -->
+    <Compile Remove="allure-results\**" />
+ 
+    <!--
+      Feature files are intentionally NOT copied to the output directory.
+      Copying them caused Reqnroll to discover tests from both source (Features/)
+      and output (bin/Debug/net8.0/Features/), doubling every test run.
+      FeatureFileReader.cs reads them from the project root at runtime.
+    -->
+  </ItemGroup>
+ 
 
 </Project>

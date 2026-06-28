@@ -1,6 +1,9 @@
+using Playwright.AiFramework.Reporting;
+
 namespace Playwright.AiFramework.Core;
 
 /// <summary>
+/// Executes AI-generated Playwright actions against a live browser page.
 /// Executes AI-generated Playwright actions against a live browser page.
 ///
 /// Locator strategy — smart and adaptive:
@@ -20,12 +23,27 @@ namespace Playwright.AiFramework.Core;
 ///                  partial match is safe and avoids whitespace issues)
 ///
 ///   placeholder, testid → no Exact option (Playwright handles these internally)
+/// 
+/// Allure integration:
+///   • Every action is wrapped in AllureReporter.StepAsync — appears as a named
+///     sub-step in the Allure report with pass/fail status and timing.
+///   • Screenshots are taken after key actions (navigate, assertions) and attached
+///     to the step so the report shows the page state at each meaningful point.
+///   • Screenshot frequency is controlled by Allure:ScreenshotMode in appsettings.json:
+///       KeyActions (default) — navigate + assert_* only
+///       All                  — after every action
+///       None                 — no inline screenshots (failure screenshot still captured)
 /// </summary>
 public class PlaywrightRunner
 {
-    private readonly IPage _page;
+    private readonly IPage  _page;
+    private readonly string _screenshotMode;
 
-    public PlaywrightRunner(IPage page) => _page = page;
+    public PlaywrightRunner(IPage page)
+    {
+        _page           = page;
+        _screenshotMode = AppConfig.Get("Allure:ScreenshotMode") ?? "KeyActions";
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Public entry point
@@ -35,9 +53,22 @@ public class PlaywrightRunner
     {
         for (var i = 0; i < actions.Count; i++)
         {
-            var a = actions[i];
+            var a        = actions[i];
+            var stepName = FormatStepName(a, i + 1, actions.Count);
+
             Console.WriteLine($"  [{i + 1:D2}] {a.Description ?? a.Action.ToUpperInvariant()}");
-            await RunActionAsync(a);
+
+            // Each Playwright action becomes a named sub-step in Allure.
+            // The step shows timing, pass/fail, and any screenshot attachments.
+            await AllureReporter.StepAsync(stepName, async () =>
+            {
+                await RunActionAsync(a);
+
+                if (ShouldCapture(a.Action))
+                    await AllureReporter.AttachScreenshotAsync(
+                        _page,
+                        $"{ActionIcon(a.Action)} {a.Description ?? a.Action}");
+            });
         }
     }
 
@@ -47,7 +78,6 @@ public class PlaywrightRunner
 
     private async Task RunActionAsync(PlaywrightAction a)
     {
-        // ── Page-level actions (no locator needed) ────────────────────────────
         switch (a.Action.ToLowerInvariant())
         {
             case "navigate":
@@ -64,8 +94,6 @@ public class PlaywrightRunner
                 return;
         }
 
-        // ── Locator-based actions ─────────────────────────────────────────────
-        // Resolve once with adaptive retry, then dispatch on action type.
         var loc = await ResolveLocatorAsync(a);
 
         switch (a.Action.ToLowerInvariant())
@@ -95,8 +123,6 @@ public class PlaywrightRunner
                 break;
 
             case "assert_text":
-                // Fix: if Claude omits 'expected', degrade gracefully to a visibility check
-                // rather than passing empty string to ToContainTextAsync (which finds nothing)
                 if (!string.IsNullOrEmpty(a.Expected))
                     await Assertions.Expect(loc).ToContainTextAsync(a.Expected);
                 else
@@ -108,10 +134,7 @@ public class PlaywrightRunner
                 break;
 
             default:
-                throw new NotSupportedException(
-                    $"Unknown action: '{a.Action}'. Supported: navigate, fill, click, " +
-                    "check, uncheck, select, assert_visible, assert_text, " +
-                    "assert_checked, assert_url, wait_for_url");
+                throw new NotSupportedException($"Unknown action: '{a.Action}'");
         }
     }
 
@@ -119,29 +142,15 @@ public class PlaywrightRunner
     // Adaptive locator resolution
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Two-phase resolution:
-    ///   Phase 1 — build with preferred settings (Exact = true for role+name)
-    ///   Phase 2 — if 0 elements found AND Exact was auto-selected (not explicitly
-    ///             set in the action), rebuild with Exact = false and log the fallback.
-    ///
-    /// CountAsync() is used rather than try/catch because it is non-throwing
-    /// and does not trigger Playwright's built-in timeout/retry mechanism.
-    /// </summary>
     private async Task<ILocator> ResolveLocatorAsync(PlaywrightAction a)
     {
-        var type = LocatorType(a);
-
-        // Exact = true is preferred only for role locators that have an explicit name.
-        // text / label / everything else defaults to partial match.
+        var type        = LocatorType(a);
         var preferExact = type.StartsWith("role:") && !string.IsNullOrEmpty(a.LocatorName);
         var exact       = a.Exact ?? preferExact;
 
         var locator  = BuildLocator(a, exact);
         var resolved = ApplyNth(locator, a);
 
-        // Adaptive retry — only when Exact was auto-chosen, not when the action
-        // explicitly set "exact": true (meaning the caller knows what they want).
         if (exact && a.Exact is null)
         {
             var count = await resolved.CountAsync();
@@ -154,8 +163,7 @@ public class PlaywrightRunner
                 if (fallbackCount > 0)
                 {
                     Console.WriteLine(
-                        $"  ℹ️  Exact match: 0 results — partial match: {fallbackCount} result(s) " +
-                        $"[{a.LocatorType}:{a.LocatorName}]");
+                        $"  ℹ️  Exact→0, partial→{fallbackCount} [{a.LocatorType}:{a.LocatorName}]");
                     return fallbackResolved;
                 }
             }
@@ -164,53 +172,34 @@ public class PlaywrightRunner
         return resolved;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Pure locator construction (no async, no side-effects)
-    // ─────────────────────────────────────────────────────────────────────────
-
     private ILocator BuildLocator(PlaywrightAction a, bool exact)
     {
         var type = LocatorType(a);
         var name = a.LocatorName;
 
-        // ── GetByRole ─────────────────────────────────────────────────────────
         if (type.StartsWith("role:"))
         {
             var ariaRole = Enum.Parse<AriaRole>(type[5..], ignoreCase: true);
             var options  = new PageGetByRoleOptions();
-
-            // Only apply the Name filter when the action provides a non-empty locatorName.
-            // Omitting Name is correct for elements with no accessible name (e.g. checkboxes
-            // without an associated <label>) — use the 'index' field to pick the right one.
             if (!string.IsNullOrEmpty(name))
             {
                 options.Name  = name;
                 options.Exact = exact;
             }
-
             return _page.GetByRole(ariaRole, options);
         }
 
-        // All non-role strategies require a non-empty name
         if (string.IsNullOrEmpty(name))
             throw new ArgumentException(
                 $"'locatorName' must not be empty for locatorType '{type}'");
 
         return type switch
         {
-            // Partial match by default — text fragments often appear inside longer strings
-            "text"        => _page.GetByText(name, new PageGetByTextOptions { Exact = exact }),
-
-            // Partial match by default — form labels are unique per page section
-            "label"       => _page.GetByLabel(name, new PageGetByLabelOptions { Exact = exact }),
-
-            // No Exact option in Playwright API for these two
+            "text"        => _page.GetByText(name,        new PageGetByTextOptions  { Exact = exact }),
+            "label"       => _page.GetByLabel(name,       new PageGetByLabelOptions { Exact = exact }),
             "placeholder" => _page.GetByPlaceholder(name),
             "testid"      => _page.GetByTestId(name),
-
-            _ => throw new NotSupportedException(
-                     $"Unsupported locatorType: '{type}'. " +
-                     "Valid values: role:<ariarole>, label, text, placeholder, testid")
+            _             => throw new NotSupportedException($"Unsupported locatorType: '{type}'")
         };
     }
 
@@ -218,15 +207,44 @@ public class PlaywrightRunner
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
+    private bool ShouldCapture(string action) =>
+        _screenshotMode switch
+        {
+            "All"        => true,
+            "KeyActions" => action is "navigate" or "assert_visible" or "assert_text" or "assert_url",
+            _            => false   // "None" or unrecognised
+        };
+
+    private static string ActionIcon(string action) => action switch
+    {
+        "navigate"       => "🌐",
+        "fill"           => "✏️",
+        "click"          => "🖱️",
+        "check"          => "☑️",
+        "uncheck"        => "🔲",
+        "select"         => "📋",
+        "assert_visible" => "👁️",
+        "assert_text"    => "🔤",
+        "assert_checked" => "✅",
+        "assert_url"     => "🔗",
+        _                => "▶️"
+    };
+
+    private static string FormatStepName(PlaywrightAction a, int index, int total)
+    {
+        var icon   = ActionIcon(a.Action);
+        var desc   = a.Description ?? $"{a.Action.ToUpperInvariant()} {a.LocatorName}".Trim();
+        return $"{icon} [{index}/{total}] {desc}";
+    }
+
     private static ILocator ApplyNth(ILocator locator, PlaywrightAction a) =>
         a.Index.HasValue ? locator.Nth(a.Index.Value) : locator;
 
     private static string LocatorType(PlaywrightAction a) =>
         (a.LocatorType
-         ?? throw new ArgumentException($"'locatorType' is required for action '{a.Action}'"))
+         ?? throw new ArgumentException($"'locatorType' required for '{a.Action}'"))
         .ToLowerInvariant();
 
-    private static string Require(string? value, PlaywrightAction action, string fieldName) =>
-        value ?? throw new ArgumentException(
-            $"Action '{action.Action}' requires the '{fieldName}' field.");
+    private static string Require(string? value, PlaywrightAction action, string field) =>
+        value ?? throw new ArgumentException($"Action '{action.Action}' requires '{field}'.");
 }

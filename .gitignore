@@ -24,3 +24,7 @@ Thumbs.db
 
 # Env files for API Keys, passwords, etc. — these are sensitive and should not be checked in
 env/
+
+## Allure reporting output (generated at runtime)
+allure-results/
+allure-report/

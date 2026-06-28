@@ -1,15 +1,38 @@
 namespace Playwright.AiFramework.AI;
-
 /// <summary>
-/// Generates or UPDATES Page Objects and Step Definitions after each AI test run.
+///  Generates or UPDATES Page Objects and Step Definitions after each AI test run.
 ///
-/// Key behaviours:
+///  Key behaviours:
 ///  • Page class name comes from the Feature title, not the scenario title
 ///    → All scenarios in "Login Page" feature share LoginPage.generated.cs
 ///  • Registry context is read before every generation call
 ///    → Claude knows what already exists and reuses/extends instead of duplicating
 ///  • Existing .generated.cs files are sent back to Claude as context
 ///    → Output is always the complete, merged class (old + new methods)
+///
+///   File resolution strategy (handles the graduation workflow):
+///   When a dev renames LoginPage.generated.cs → LoginPage.cs and removes
+///   @ai_generated from the feature level, then adds a NEW @ai_generated scenario:
+///
+///   FindPageFilePath checks .cs first, then .generated.cs.
+///   CodeGenerator writes the update back to whichever file was found.
+///   No duplicate file is ever created.
+///
+///   Outcome matrix:
+///   ┌─────────────────────────┬──────────────────────────────────────────┐
+///   │ File state              │ CodeGenerator behaviour                  │
+///   ├─────────────────────────┼──────────────────────────────────────────┤
+///   │ Neither exists          │ Create LoginPage.generated.cs            │
+///   │ .generated.cs only      │ Update LoginPage.generated.cs            │
+///   │ .cs only (graduated)    │ Update LoginPage.cs (dev's file)         │
+///   │ Both (should not happen)│ Update .cs (it's found first)            │
+///   └─────────────────────────┴──────────────────────────────────────────┘
+///   Locator accuracy fix:
+///   GenerateArtifactsAsync now accepts the verified action plan and passes it
+///   to PageObjectGenerator as additional context. The action plan was produced
+///   by the site-aware TestActionGenerator prompt AND proven correct by executing
+///   in a real browser, so its locators are the ground truth Claude should use
+///   when writing page methods — not guesses derived from method names alone.
 /// </summary>
 public class CodeGenerator
 {
@@ -23,10 +46,17 @@ public class CodeGenerator
         _registry    = new RegistryReader();
         _projectRoot = FindProjectRoot();
     }
-
-    public async Task GenerateArtifactsAsync(string scenarioText, string featureTitle)
+    /// <summary>
+    /// <param name="verifiedActions">
+    /// The action plan that was proven correct in the browser.
+    /// Passed through to PageObjectGenerator as locator ground truth.
+    /// </param>
+    /// </summary>
+    public async Task GenerateArtifactsAsync(
+        string scenarioText,
+        string featureTitle,
+        IReadOnlyList<PlaywrightAction>? verifiedActions = null)
     {
-        // Fix 1: page class name derived from feature title passed by AiGenerationHook
         var pageClassName = DerivePageClassName(featureTitle);
         var registryCtx  = await _registry.BuildContextAsync();
 
@@ -34,37 +64,36 @@ public class CodeGenerator
             ? "  🔍 Registry: empty (first generation)"
             : "  🔍 Registry: existing code found — Claude will extend, not duplicate");
 
-        // ── Pass 1: Page Object ───────────────────────────────────────────────
-        await GenerateOrUpdatePageObjectAsync(scenarioText, pageClassName, registryCtx);
+        await GenerateOrUpdatePageObjectAsync(
+            scenarioText, pageClassName, registryCtx, verifiedActions);
 
-        // ── Pass 2: Step Definitions (uses methods extracted from Pass 1) ─────
-        // Fix 2: read the JUST-WRITTEN page object, extract real method signatures
         var pageCode         = await _registry.ReadPageFileAsync(pageClassName);
         var availableMethods = pageCode is not null
             ? ExtractMethodSignatures(pageCode).ToList()
             : new List<string>();
 
         if (availableMethods.Any())
-            Console.WriteLine($"  🔗 Extracted {availableMethods.Count} method(s) from {pageClassName}");
-        else
-            Console.WriteLine($"  ⚠️  No methods found in {pageClassName} — step definitions may be incomplete");
+            Console.WriteLine($"  🔗 {availableMethods.Count} method(s) available in {pageClassName}");
 
         await GenerateOrUpdateStepDefinitionsAsync(
             scenarioText, pageClassName, registryCtx, availableMethods);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Pass 1 — Page Object
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // ── Pass 1: Page Object ───────────────────────────────────────────────────
     private async Task GenerateOrUpdatePageObjectAsync(
-        string scenarioText, string pageClassName, string registryCtx)
+        string scenarioText,
+        string pageClassName,
+        string registryCtx,
+        IReadOnlyList<PlaywrightAction>? verifiedActions)
     {
-        var dir  = Path.Combine(_projectRoot, "Pages");
-        Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, $"{pageClassName}.generated.cs");
+        Directory.CreateDirectory(Path.Combine(_projectRoot, "Pages"));
 
-        var existingCode = await _registry.ReadPageFileAsync(pageClassName);
+        var existingPath = _registry.FindPageFilePath(pageClassName);
+        var outputPath   = existingPath
+                           ?? Path.Combine(_projectRoot, "Pages", $"{pageClassName}.generated.cs");
+        var existingCode = existingPath is not null
+                           ? await File.ReadAllTextAsync(existingPath)
+                           : null;
 
         var sb = new System.Text.StringBuilder();
         if (existingCode is not null)
@@ -91,30 +120,37 @@ public class CodeGenerator
             sb.Append(scenarioText);
         }
 
-        var label = existingCode is not null ? "Updating" : "Creating";
-        Console.WriteLine($"  🏗️  {label} Page Object → {pageClassName}.generated.cs");
+        var label = existingCode is not null
+            ? $"Updating {Path.GetFileName(outputPath)}"
+            : $"Creating {pageClassName}.generated.cs";
+        Console.WriteLine($"  🏗️  {label}");
 
-        var raw  = await _claude.GenerateAsync(SystemPrompts.PageObjectGenerator(registryCtx), sb.ToString());
-        var code = ExtractCSharpCode(raw);   // Fix 3: robust extraction
+        var raw  = await _claude.GenerateAsync(
+            SystemPrompts.PageObjectGenerator(registryCtx, verifiedActions),
+            sb.ToString());
+        var code = ExtractCSharpCode(raw);
 
-        await File.WriteAllTextAsync(path, code);
-        Console.WriteLine($"  📄 Pages/{pageClassName}.generated.cs");
+        await File.WriteAllTextAsync(outputPath, code);
+        Console.WriteLine($"  📄 {Path.GetRelativePath(_projectRoot, outputPath)}");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Pass 2 — Step Definitions
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Pass 2: Step Definitions ──────────────────────────────────────────────
 
     private async Task GenerateOrUpdateStepDefinitionsAsync(
-        string scenarioText, string pageClassName, string registryCtx,
-        List<string> availableMethods)                         // Fix 2: receive actual methods
+        string scenarioText,
+        string pageClassName,
+        string registryCtx,
+        List<string> availableMethods)
     {
-        var dir           = Path.Combine(_projectRoot, "StepDefinitions");
-        Directory.CreateDirectory(dir);
-        var stepClassName = pageClassName.Replace("Page", "Steps");
-        var path          = Path.Combine(dir, $"{stepClassName}.generated.cs");
+        Directory.CreateDirectory(Path.Combine(_projectRoot, "StepDefinitions"));
 
-        var existingCode = await _registry.ReadStepFileAsync(stepClassName);
+        var stepClassName = pageClassName.Replace("Page", "Steps");
+        var existingPath  = _registry.FindStepFilePath(stepClassName);
+        var outputPath    = existingPath
+                            ?? Path.Combine(_projectRoot, "StepDefinitions", $"{stepClassName}.generated.cs");
+        var existingCode  = existingPath is not null
+                            ? await File.ReadAllTextAsync(existingPath)
+                            : null;
 
         var sb = new System.Text.StringBuilder();
         if (existingCode is not null)
@@ -140,88 +176,91 @@ public class CodeGenerator
             sb.Append(scenarioText);
         }
 
-        var label = existingCode is not null ? "Updating" : "Creating";
-        Console.WriteLine($"  🏗️  {label} Step Definitions → {stepClassName}.generated.cs");
+        var label = existingCode is not null
+            ? $"Updating {Path.GetFileName(outputPath)}"
+            : $"Creating {stepClassName}.generated.cs";
+        Console.WriteLine($"  🏗️  {label}");
 
-        // Fix 2: pass availableMethods to prompt so Claude cannot invent method names
         var raw  = await _claude.GenerateAsync(
             SystemPrompts.StepDefinitionGenerator(pageClassName, registryCtx, availableMethods),
             sb.ToString());
-        var code = ExtractCSharpCode(raw);   // Fix 3: robust extraction
 
-        await File.WriteAllTextAsync(path, code);
-        Console.WriteLine($"  📄 StepDefinitions/{stepClassName}.generated.cs");
+        // EnsurePagesImport guarantees the using statement is present regardless
+        // of whether Claude included it — prompt instructions for imports are
+        // unreliable; deterministic post-processing is not.
+        var code = EnsurePagesImport(ExtractCSharpCode(raw));
+
+        await File.WriteAllTextAsync(outputPath, code);
+        Console.WriteLine($"  📄 {Path.GetRelativePath(_projectRoot, outputPath)}");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Fix 3 — Robust C# code extraction
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Extracts pure C# code from a Claude response.
-    ///
-    /// Strategy 1 — strip markdown fences (```csharp ... ```)
-    /// Strategy 2 — scan line-by-line for the first real C# token
-    ///              (namespace, [Binding], public class)
-    ///              This handles prompt text that spills into the response (Issue 3).
+    /// Guarantees "using Playwright.AiFramework.Pages;" is present in every
+    /// generated step definitions file, regardless of what Claude returned.
+    /// Claude frequently ignores prompt instructions for using statements;
+    /// post-processing here is the reliable alternative.
     /// </summary>
+    private static string EnsurePagesImport(string code)
+    {
+        const string required = "using Playwright.AiFramework.Pages;";
+
+        if (code.Contains(required))
+            return code;
+
+        // Insert at the right position:
+        //   Before the first non-using line (namespace / [Binding] / public class)
+        //   so existing using statements stay grouped together.
+        var lines         = code.Split('\n').ToList();
+        var firstNonUsing = lines.FindIndex(
+            l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith("using "));
+
+        if (firstNonUsing > 0)
+        {
+            lines.Insert(firstNonUsing, string.Empty);
+            lines.Insert(firstNonUsing, required);
+        }
+        else
+        {
+            lines.Insert(0, string.Empty);
+            lines.Insert(0, required);
+        }
+
+        return string.Join("\n", lines);
+    }
+
     private static string ExtractCSharpCode(string raw)
     {
         var s = raw.Trim();
-
-        // ── Strategy 1: markdown fences ──────────────────────────────────────
         if (s.StartsWith("```"))
         {
-            var fenceLines = s.Split('\n');
             var fenced = string.Join("\n",
-                fenceLines.Skip(1).TakeWhile(l => !l.TrimStart().StartsWith("```")));
+                s.Split('\n').Skip(1).TakeWhile(l => !l.TrimStart().StartsWith("```")));
             if (!string.IsNullOrWhiteSpace(fenced))
                 return fenced.Trim();
         }
 
-        // ── Strategy 2: find first C# token (handles prompt spill) ───────────
-        var allLines = s.Split('\n');
-        for (var i = 0; i < allLines.Length; i++)
+        var lines = s.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
         {
-            var t = allLines[i].Trim();
-            if (t.StartsWith("namespace ")   ||
-                t.StartsWith("[Binding]")     ||
-                t.StartsWith("public class ") ||
-                t.StartsWith("// <auto-generated"))
-            {
-                return string.Join("\n", allLines.Skip(i)).Trim();
-            }
+            var t = lines[i].Trim();
+            if (t.StartsWith("namespace ") || t.StartsWith("[Binding]") || t.StartsWith("public class "))
+                return string.Join("\n", lines.Skip(i)).Trim();
         }
 
-        // ── Fallback: return as-is and let the compiler surface any errors ────
         return s;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Fix 2: extract all "public async Task MethodName(params)" from a .cs file.
-    /// These are passed to the step definition prompt as the only callable methods.
-    /// </summary>
     private static IEnumerable<string> ExtractMethodSignatures(string code) =>
         System.Text.RegularExpressions.Regex
             .Matches(code, @"public\s+async\s+Task\s+(\w+\s*\([^)]*\))")
             .Select(m => $"public async Task {m.Groups[1].Value.Trim()}");
 
-    /// <summary>
-    /// Fix 1: derive page class name from the Feature title.
-    ///
-    /// "Login Page"           → LoginPage
-    /// "Checkboxes Page"      → CheckboxesPage
-    /// "Add Remove Elements"  → AddRemoveElementsPage
-    /// </summary>
     private static string DerivePageClassName(string featureTitle)
     {
         var clean = System.Text.RegularExpressions.Regex.Replace(
-            featureTitle,
-            @"\b(Feature|Tests?|Specs?)\b", "",
+            featureTitle, @"\b(Feature|Tests?|Specs?)\b", "",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
 
         var pascal = string.Concat(
@@ -230,10 +269,8 @@ public class CodeGenerator
                 .Split(' ', StringSplitOptions.RemoveEmptyEntries)
                 .Select(w => char.ToUpper(w[0]) + w[1..]));
 
-        // Guarantee exactly one "Page" suffix, no double "PagePage"
         return pascal.EndsWith("Page", StringComparison.OrdinalIgnoreCase)
-            ? pascal
-            : pascal + "Page";
+            ? pascal : pascal + "Page";
     }
 
     private static string FindProjectRoot()
